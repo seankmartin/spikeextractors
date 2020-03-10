@@ -23,7 +23,7 @@ class PhyRecordingExtractor(BinDatRecordingExtractor):
         phy_folder = Path(folder_path)
 
         self.params = read_python(str(phy_folder / 'params.py'))
-        datfile = [x for x in phy_folder.iterdir() if x.suffix == '.dat' or x.suffix == '.bin']
+        datfile = self.params["dat_path"]
 
         if (phy_folder / 'channel_map_si.npy').is_file():
             channel_map = list(np.squeeze(np.load(phy_folder / 'channel_map_si.npy')))
@@ -34,7 +34,7 @@ class PhyRecordingExtractor(BinDatRecordingExtractor):
         else:
             channel_map = list(range(self.params['n_channels_dat']))
 
-        BinDatRecordingExtractor.__init__(self, datfile[0], sampling_frequency=float(self.params['sample_rate']),
+        BinDatRecordingExtractor.__init__(self, datfile, sampling_frequency=float(self.params['sample_rate']),
                                           dtype=self.params['dtype'], numchan=self.params['n_channels_dat'],
                                           recording_channels=list(channel_map))
 
