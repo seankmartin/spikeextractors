@@ -159,17 +159,25 @@ class PhySortingExtractor(SortingExtractor):
             # if channel groups are present, compute waveforms by group
             if (phy_folder / 'channel_groups.npy').is_file():
                 channel_groups = np.load(phy_folder / 'channel_groups.npy')
+                # NOTE this is a hard fix for our code, really should
+                # Figure out why these channel groups are all 0
+                if np.all(channel_groups == 0):
+                    if verbose:
+                        print("Assuming tetrode based channels")
+                    channel_groups = np.array([i//4 for i in range(64)])
                 assert len(channel_groups) == recording.get_num_channels()
                 for (ch, cg) in zip(recording.get_channel_ids(), channel_groups):
                     recording.set_channel_property(ch, 'group', cg)
                 for u_i, u in enumerate(self.get_unit_ids()):
                     if verbose:
                         print('Computing waveform by group for unit', u)
-                    frames_before = int(0.5 / 1000. * recording.get_sampling_frequency())
-                    frames_after = int(2 / 1000. * recording.get_sampling_frequency())
+                    frames_before = 10
+                    frames_after = 40
                     spiketrain = self.get_unit_spike_train(u)
                     if 'group' in self.get_unit_property_names(u):
-                        group_idx = np.where(channel_groups == int(self.get_unit_property(u, 'group')))[0]
+                        group_to_match = int(self.get_unit_property(u, 'group'))
+                        matches = np.nonzero(channel_groups == group_to_match)
+                        group_idx = matches[0]
                         wf = recording.get_snippets(reference_frames=spiketrain,
                                                     snippet_len=[frames_before, frames_after],
                                                     channel_ids=group_idx)
