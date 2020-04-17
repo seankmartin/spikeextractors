@@ -158,10 +158,11 @@ class PhySortingExtractor(SortingExtractor):
                 self.set_unit_spike_features(clust, 'pc_features', pc_features[idx])
 
         if load_waveforms:
-            datfile = [x for x in phy_folder.iterdir() if x.suffix == '.dat' or x.suffix == '.bin']
+            datfile = self.params["dat_path"]
 
-            recording = BinDatRecordingExtractor(datfile[0], sampling_frequency=float(self.params['sample_rate']),
-                                                 dtype=self.params['dtype'], numchan=self.params['n_channels_dat'])
+            recording = BinDatRecordingExtractor(datfile, 
+                sampling_frequency=float(self.params['sample_rate']),
+                dtype=self.params['dtype'], numchan=self.params['n_channels_dat'])
             # if channel groups are present, compute waveforms by group
             if (phy_folder / 'channel_groups.npy').is_file():
                 channel_groups = np.load(phy_folder / 'channel_groups.npy')
