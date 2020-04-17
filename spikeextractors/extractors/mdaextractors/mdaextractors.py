@@ -1,12 +1,13 @@
 from spikeextractors import RecordingExtractor
 from spikeextractors import SortingExtractor
-from ...extraction_tools import write_to_binary_dat_format
+from spikeextractors.extraction_tools import write_to_binary_dat_format, check_get_traces_args
 
 import json
 import numpy as np
 from pathlib import Path
 from .mdaio import DiskReadMda, readmda, writemda64, MdaHeader
 import os
+import shutil
 
 
 class MdaRecordingExtractor(RecordingExtractor):
@@ -15,9 +16,6 @@ class MdaRecordingExtractor(RecordingExtractor):
     installed = True  # check at class level if installed or not
     is_writable = True
     mode = 'folder'
-    extractor_gui_params = [
-        {'name': 'folder_path', 'type': 'folder', 'title': "Path to folder"},
-    ]
     installation_mesg = ""  # error message when not installed
 
     def __init__(self, folder_path, raw_fname='raw.mda', params_fname='params.json', geom_fname='geom.csv'):
@@ -40,6 +38,7 @@ class MdaRecordingExtractor(RecordingExtractor):
         RecordingExtractor.__init__(self)
         for m in range(self._num_channels):
             self.set_channel_property(m, 'location', self._geom[m, :])
+        self._kwargs = {'folder_path': str(Path(folder_path).absolute())}
 
     def get_channel_ids(self):
         return list(range(self._num_channels))
@@ -50,17 +49,47 @@ class MdaRecordingExtractor(RecordingExtractor):
     def get_sampling_frequency(self):
         return self._sampling_frequency
 
+    @check_get_traces_args
     def get_traces(self, channel_ids=None, start_frame=None, end_frame=None):
-        if start_frame is None:
-            start_frame = 0
-        if end_frame is None:
-            end_frame = self.get_num_frames()
-        if channel_ids is None:
-            channel_ids = self.get_channel_ids()
         X = DiskReadMda(self._timeseries_path)
         recordings = X.readChunk(i1=0, i2=start_frame, N1=X.N1(), N2=end_frame - start_frame)
         recordings = recordings[channel_ids, :]
         return recordings
+
+    def write_to_binary_dat_format(self, save_path, time_axis=0, dtype=None, chunk_size=None, chunk_mb=500):
+        '''Saves the traces of this recording extractor into binary .dat format.
+
+        Parameters
+        ----------
+        save_path: str
+            The path to the file.
+        time_axis: 0 (default) or 1
+            If 0 then traces are transposed to ensure (nb_sample, nb_channel) in the file.
+            If 1, the traces shape (nb_channel, nb_sample) is kept in the file.
+        dtype: dtype
+            Type of the saved data. Default float32
+        chunk_size: None or int
+            If not None then the file is saved in chunks.
+            This avoid to much memory consumption for big files.
+            If 'auto' the file is saved in chunks of ~ 500Mb
+        chunk_mb: None or int
+            Chunk size in Mb (default 500Mb)
+        '''
+        X = DiskReadMda(self._timeseries_path)
+        header_size = X._header.header_size
+        if dtype is None or dtype == self.get_dtype():
+            try:
+                with open(self._timeseries_path, 'rb') as src, open(save_path, 'wb') as dst:
+                    src.seek(header_size)
+                    shutil.copyfileobj(src, dst)
+            except Exception as e:
+                print('Error occurred while copying:', e)
+                print('Writing to binary')
+                write_to_binary_dat_format(self, save_path=save_path, time_axis=time_axis, dtype=dtype,
+                                           chunk_size=chunk_size, chunk_mb=chunk_mb)
+        else:
+            write_to_binary_dat_format(self, save_path=save_path, time_axis=time_axis, dtype=dtype,
+                                       chunk_size=chunk_size, chunk_mb=chunk_mb)
 
     @staticmethod
     def write_recording(recording, save_path, params=dict(), raw_fname='raw.mda', params_fname='params.json',
@@ -132,10 +161,6 @@ class MdaRecordingExtractor(RecordingExtractor):
 
 class MdaSortingExtractor(SortingExtractor):
     extractor_name = 'MdaSortingExtractor'
-    exporter_name = 'MdaSortingExporter'
-    exporter_gui_params = [
-        {'name': 'save_path', 'type': 'file', 'title': "Save path"},
-    ]
     installed = True  # check at class level if installed or not
     is_writable = True
     mode = 'file'
@@ -154,12 +179,14 @@ class MdaSortingExtractor(SortingExtractor):
         for unit_id in self._unit_ids:
             inds = np.where(self._labels == unit_id)
             max_channels = self._max_channels[inds].astype(int)
-            self.set_unit_property(unit_id, 'max_channel', max_channels[0])
+            self.set_unit_property(unit_id, 'mda_max_channel', max_channels[0])
+        self._kwargs = {'file_path': str(Path(file_path).absolute()), 'sampling_frequency': sampling_frequency}
 
     def get_unit_ids(self):
         return list(self._unit_ids)
 
     def get_unit_spike_train(self, unit_id, start_frame=None, end_frame=None):
+        start_frame, end_frame = self._cast_start_end_frame(start_frame, end_frame)
         if start_frame is None:
             start_frame = 0
         if end_frame is None:

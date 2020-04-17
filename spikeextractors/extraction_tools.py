@@ -3,6 +3,10 @@ import csv
 import os
 import sys
 from pathlib import Path
+import json
+import datetime
+from functools import wraps
+from spikeextractors.baseextractor import BaseExtractor
 
 
 def read_python(path):
@@ -163,6 +167,7 @@ def load_probe_file(recording, probe_file, channel_map=None, channel_groups=None
     else:
         raise NotImplementedError("Only .csv and .prb probe files can be loaded.")
 
+    subrecording._kwargs['probe_file'] = str(probe_file.absolute())
     return subrecording
 
 
@@ -242,13 +247,13 @@ def read_binary(file, numchan, dtype, time_axis=0, offset=0):
     numchan = int(numchan)
     with Path(file).open() as f:
         nsamples = (os.fstat(f.fileno()).st_size - offset) // (numchan * np.dtype(dtype).itemsize)
-        if time_axis == 0:
-            samples = np.memmap(f, np.dtype(dtype), mode='r', offset=offset,
-                                shape=(nsamples, numchan))
-            samples = np.memmap.transpose(samples)
-        else:
-            samples = np.memmap(f, np.dtype(dtype), mode='r', offset=offset,
-                                shape=(numchan, nsamples))
+    if time_axis == 0:
+        samples = np.memmap(file, np.dtype(dtype), mode='r', offset=offset,
+                            shape=(nsamples, numchan))
+        samples = np.memmap.transpose(samples)
+    else:
+        samples = np.memmap(file, np.dtype(dtype), mode='r', offset=offset,
+                            shape=(numchan, nsamples))
     return samples
 
 
@@ -356,10 +361,8 @@ def get_sub_extractors_by_property(extractor, property_name, return_property_lis
     sub_list, prop_list
         If return_property_list is True, the property list will be returned as well.
     '''
-    from .recordingextractor import RecordingExtractor
-    from .sortingextractor import SortingExtractor
-    from .subrecordingextractor import SubRecordingExtractor
-    from .subsortingextractor import SubSortingExtractor
+    from spikeextractors import RecordingExtractor, SortingExtractor, SubRecordingExtractor, SubSortingExtractor
+
     if isinstance(extractor, RecordingExtractor):
         if property_name not in extractor.get_shared_channel_property_names():
             raise ValueError("'property_name' must be must be a property of the recording channels")
@@ -511,3 +514,131 @@ def _export_prb_file(recording, file_name, grouping_property=None, graph=True, g
                 f.write("           'graph':  [],\n")
                 f.write('        },\n')
             f.write('}\n')
+
+
+def _check_json(d):
+    # quick hack to ensure json writable
+    for k, v in d.items():
+        if isinstance(v, Path):
+            d[k] = str(v)
+        elif isinstance(v, (np.int, np.int32, np.int64)):
+            d[k] = int(v)
+        elif isinstance(v,  (np.float, np.float32, np.float64)):
+            d[k] = float(v)
+        elif isinstance(v, datetime.datetime):
+            d[k] = v.isoformat()
+
+    return d
+
+
+def load_extractor_from_json(json_file):
+    '''
+    Instantiates extractor from json file
+
+    Parameters
+    ----------
+    json_file: str or Path
+        Path to json file
+
+    Returns
+    -------
+    extractor: RecordingExtractor or SortingExtractor
+        The loaded extractor object
+    '''
+    return BaseExtractor.load_extractor_from_json(json_file)
+
+
+def load_extractor_from_dict(d):
+    '''
+    Instantiates extractor from dictionary
+
+    Parameters
+    ----------
+    d: dictionary
+        Python dictionary
+
+    Returns
+    -------
+    extractor: RecordingExtractor or SortingExtractor
+        The loaded extractor object
+    '''
+    return BaseExtractor.load_extractor_from_dict(d)
+
+
+def check_get_traces_args(func):
+    @wraps(func)
+    def corrected_args(*args, **kwargs):
+        # parse args and kwargs
+        if len(args) == 1:
+            recording = args[0]
+            channel_ids = kwargs.get('channel_ids', None)
+            start_frame = kwargs.get('start_frame', None)
+            end_frame = kwargs.get('end_frame', None)
+        elif len(args) == 2:
+            recording = args[0]
+            channel_ids = args[1]
+            start_frame = kwargs.get('start_frame', None)
+            end_frame = kwargs.get('end_frame', None)
+        elif len(args) == 3:
+            recording = args[0]
+            channel_ids = args[1]
+            start_frame = args[2]
+            end_frame = kwargs.get('end_frame', None)
+        elif len(args) == 4:
+            recording = args[0]
+            channel_ids = args[1]
+            start_frame = args[2]
+            end_frame = args[3]
+        else:
+            raise Exception("Too many arguments!")
+
+        if channel_ids is not None:
+            if isinstance(channel_ids, (int, np.integer)):
+                channel_ids = list([channel_ids])
+            else:
+                channel_ids = channel_ids
+            if np.any([ch not in recording.get_channel_ids() for ch in channel_ids]):
+                print("Removing invalid 'channel_ids'", [ch for ch in channel_ids if ch not in recording.get_channel_ids()])
+                channel_ids = [ch for ch in channel_ids if ch in recording.get_channel_ids()]
+        else:
+            channel_ids = recording.get_channel_ids()
+        if start_frame is not None:
+            if start_frame < 0:
+                start_frame = recording.get_num_frames() + start_frame
+        else:
+            start_frame = 0
+        if end_frame is not None:
+            if end_frame > recording.get_num_frames():
+                print("'end_time' set to", recording.get_num_frames())
+                end_frame = recording.get_num_frames()
+            elif end_frame < 0:
+                end_frame = recording.get_num_frames() + end_frame
+        else:
+            end_frame = recording.get_num_frames()
+        assert end_frame - start_frame > 0, "'start_frame' must be less than 'end_frame'!"
+        start_frame, end_frame = cast_start_end_frame(start_frame, end_frame)
+        kwargs['channel_ids'] = channel_ids
+        kwargs['start_frame'] = start_frame
+        kwargs['end_frame'] = end_frame
+
+        # pass recording as arg and rest as kwargs
+        get_traces_correct_arg = func(args[0], **kwargs)
+
+        return get_traces_correct_arg
+    return corrected_args
+
+
+def cast_start_end_frame(start_frame, end_frame):
+    if isinstance(start_frame, (float, np.float)):
+        start_frame = int(start_frame)
+    elif isinstance(start_frame, (int, np.integer, type(None))):
+        start_frame = start_frame
+    else:
+        raise ValueError("start_frame must be an int, float (not infinity), or None")
+    if isinstance(end_frame, (float, np.float)):
+        end_frame = int(end_frame)
+    elif isinstance(end_frame, (int, np.integer, type(None))):
+        end_frame = end_frame
+    else:
+        raise ValueError("end_frame must be an int, float (not infinity), or None")
+    return start_frame, end_frame

@@ -2,6 +2,7 @@ from spikeextractors import RecordingExtractor
 from spikeextractors import SortingExtractor
 from pathlib import Path
 import numpy as np
+from spikeextractors.extraction_tools import check_get_traces_args
 
 '''
 The NumpyExtractors can be constructed and used to encapsulate custom file formats and data structures which
@@ -12,15 +13,25 @@ like any other Recording/SortingExtractor.
 class NumpyRecordingExtractor(RecordingExtractor):
     extractor_name = 'NumpyRecordingExtractor'
     is_writable = True
+
     def __init__(self, timeseries, sampling_frequency, geom=None):
+        RecordingExtractor.__init__(self)
         if isinstance(timeseries, str):
             if Path(timeseries).is_file():
+                assert Path(timeseries).suffix == '.npy', "'timeseries' file is not a numpy file (.npy)"
+                self.is_dumpable = True
                 self._timeseries = np.load(timeseries)
+                self._kwargs = {'timeseries': str(Path(timeseries).absolute()),
+                                'sampling_frequency': sampling_frequency, 'geom': geom}
+            else:
+                raise ValueError("'timeeseries' is does not exist")
         elif isinstance(timeseries, np.ndarray):
+            self.is_dumpable = False
             self._timeseries = timeseries
+            self._kwargs = {'timeseries': timeseries,
+                            'sampling_frequency': sampling_frequency, 'geom': geom}
         else:
-            raise TypeError("'timeseries must be a .npy file name or a numpy array")
-        RecordingExtractor.__init__(self)
+            raise TypeError("'timeseries' can be a str or a numpy array")
         self._sampling_frequency = float(sampling_frequency)
         self._geom = geom
         if geom is not None:
@@ -36,13 +47,8 @@ class NumpyRecordingExtractor(RecordingExtractor):
     def get_sampling_frequency(self):
         return self._sampling_frequency
 
+    @check_get_traces_args
     def get_traces(self, channel_ids=None, start_frame=None, end_frame=None):
-        if start_frame is None:
-            start_frame = 0
-        if end_frame is None:
-            end_frame = self.get_num_frames()
-        if channel_ids is None:
-            channel_ids = self.get_channel_ids()
         recordings = self._timeseries[:, start_frame:end_frame][channel_ids, :]
         return recordings
 
@@ -55,9 +61,11 @@ class NumpyRecordingExtractor(RecordingExtractor):
 class NumpySortingExtractor(SortingExtractor):
     extractor_name = 'NumpySortingExtractor'
     is_writable = False
+
     def __init__(self):
         SortingExtractor.__init__(self)
         self._units = {}
+        self.is_dumpable = False
 
     def load_from_extractor(self, sorting, copy_unit_properties=False, copy_unit_spike_features=False):
         '''This function loads the information from a SortingExtractor into this extractor.
@@ -116,6 +124,7 @@ class NumpySortingExtractor(SortingExtractor):
         return list(self._units.keys())
 
     def get_unit_spike_train(self, unit_id, start_frame=None, end_frame=None):
+        start_frame, end_frame = self._cast_start_end_frame(start_frame, end_frame)
         if start_frame is None:
             start_frame = 0
         if end_frame is None:

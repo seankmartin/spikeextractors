@@ -7,15 +7,11 @@ import csv
 
 
 class PhyRecordingExtractor(BinDatRecordingExtractor):
-
-    extractor_name = 'PhyRecordingExtractor'
+    extractor_name = 'PhyRecording'
     has_default_locations = True
     installed = True  # check at class level if installed or not
     is_writable = False
     mode = 'folder'
-    extractor_gui_params = [
-        {'name': 'folder_path', 'type': 'folder', 'title': "Path to folder"},
-    ]
     installation_mesg = ""  # error message when not installed
 
     def __init__(self, folder_path):
@@ -50,14 +46,11 @@ class PhyRecordingExtractor(BinDatRecordingExtractor):
             for (ch, loc) in zip(self.get_channel_ids(), channel_locations):
                 self.set_channel_property(ch, 'location', loc)
 
+        self._kwargs = {'folder_path': str(Path(folder_path).absolute())}
+
 
 class PhySortingExtractor(SortingExtractor):
-
     extractor_name = 'PhySortingExtractor'
-    exporter_name = 'PhySortingExporter'
-    exporter_gui_params = [
-        {'name': 'save_path', 'type': 'folder', 'title': "Save path"},
-    ]
     installed = True  # check at class level if installed or not
     is_writable = True
     mode = 'folder'
@@ -199,11 +192,15 @@ class PhySortingExtractor(SortingExtractor):
                     wf = recording.get_snippets(reference_frames=spiketrain,
                                                 snippet_len=[int(frames_before), int(frames_after)])
                     self.set_unit_spike_features(u, 'waveforms', wf)
+        self._kwargs = {'folder_path': str(Path(folder_path).absolute()),
+                        'exclude_cluster_groups': exclude_cluster_groups,
+                        'load_waveforms': load_waveforms, 'verbose': verbose}
 
     def get_unit_ids(self):
         return list(self._unit_ids)
 
     def get_unit_spike_train(self, unit_id, start_frame=None, end_frame=None):
+        start_frame, end_frame = self._cast_start_end_frame(start_frame, end_frame)
         if start_frame is None:
             start_frame = 0
         if end_frame is None:

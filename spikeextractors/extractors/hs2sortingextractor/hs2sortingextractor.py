@@ -1,5 +1,6 @@
 from spikeextractors import SortingExtractor
 import numpy as np
+from pathlib import Path
 
 try:
     import h5py
@@ -8,12 +9,7 @@ except ImportError:
     HAVE_HS2SX = False
 
 class HS2SortingExtractor(SortingExtractor):
-
     extractor_name = 'HS2SortingExtractor'
-    exporter_name = 'HS2SortingExporter'
-    exporter_gui_params = [
-        {'name': 'save_path', 'type': 'file', 'title': "Save path"},
-    ]
     installed = HAVE_HS2SX  # check at class level if installed or not
     is_writable = True
     mode = 'file'
@@ -25,7 +21,7 @@ class HS2SortingExtractor(SortingExtractor):
         self._recording_file = file_path
         self._rf = h5py.File(self._recording_file, mode='r')
         if 'Sampling' in self._rf:
-            if(self._rf['Sampling'][()] == 0):
+            if self._rf['Sampling'][()] == 0:
                 self._sampling_frequency = None
             else:
                 self._sampling_frequency = self._rf['Sampling'][()]
@@ -34,8 +30,10 @@ class HS2SortingExtractor(SortingExtractor):
         self._unit_ids = set(self._cluster_id)
         self._times = self._rf['times'][()]
 
-        if(load_unit_info):
+        if load_unit_info:
             self.load_unit_info()
+
+        self._kwargs = {'file_path': str(Path(file_path).absolute()), 'load_unit_info': load_unit_info}
 
     def load_unit_info(self):
         if ('centres' in self._rf.keys()) and (len(self._times)>0):
@@ -65,6 +63,7 @@ class HS2SortingExtractor(SortingExtractor):
         return list(self._unit_ids)
 
     def get_unit_spike_train(self, unit_id, start_frame=None, end_frame=None):
+        start_frame, end_frame = self._cast_start_end_frame(start_frame, end_frame)
         if start_frame is None:
             start_frame = 0
         if end_frame is None:

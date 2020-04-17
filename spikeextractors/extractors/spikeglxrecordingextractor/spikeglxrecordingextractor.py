@@ -2,20 +2,15 @@ from spikeextractors import RecordingExtractor
 from .readSGLX import readMeta, SampRate, makeMemMapRaw, GainCorrectIM, GainCorrectNI
 import numpy as np
 from pathlib import Path
+from spikeextractors.extraction_tools import check_get_traces_args
 
 
 class SpikeGLXRecordingExtractor(RecordingExtractor):
-
     extractor_name = 'SpikeGLXRecordingExtractor'
     has_default_locations = True
     installed = True  # check at class level if installed or not
     is_writable = True
     mode = 'file'
-    extractor_gui_params = [
-        {'name': 'file_path', 'type': 'file', 'title': "Path to file"},
-        {'name': 'x_pitch', 'type': 'int', 'value':21, 'default':21, 'title': "x_pitch for Neuropixels probe (default 21)"},
-        {'name': 'y_pitch', 'type': 'int', 'value':20, 'default':20, 'title': "y_pitch for Neuropixels probe (default 20)"},
-    ]
     installation_mesg = ""  # error message when not installed
 
     def __init__(self, file_path, x_pitch=21, y_pitch=20):
@@ -24,6 +19,8 @@ class SpikeGLXRecordingExtractor(RecordingExtractor):
         self._basepath = self._npxfile.parents[0]
 
         # Gets file type: 'imec0.ap', 'imec0.lf' or 'nidq'
+        if 'ap' in str(self._npxfile):
+            self.is_filtered = True
         aux = self._npxfile.stem.split('.')[-1]
         if aux == 'nidq':
             self._ftype = aux
@@ -63,6 +60,7 @@ class SpikeGLXRecordingExtractor(RecordingExtractor):
 
         # set gains - convert from int16 to uVolt
         self.set_channel_gains(self._channels, gains*1e6)
+        self._kwargs = {'file_path': str(Path(file_path).absolute()), 'x_pitch': x_pitch, 'y_pitch': y_pitch}
 
 
     def get_channel_ids(self):
@@ -74,16 +72,10 @@ class SpikeGLXRecordingExtractor(RecordingExtractor):
     def get_sampling_frequency(self):
         return self._sampling_frequency
 
+    @check_get_traces_args
     def get_traces(self, channel_ids=None, start_frame=None, end_frame=None):
-        if start_frame is None:
-            start_frame = 0
-        if end_frame is None:
-            end_frame = self.get_num_frames()
-        if channel_ids is None:
-            channel_ids = list(range(self._timeseries.shape[0]))
-        else:
-            channel_ids = [self._channels.index(ch) for ch in channel_ids]
-        recordings = self._timeseries[channel_ids, start_frame:end_frame]
+        channel_idxs = [self._channels.index(ch) for ch in channel_ids]
+        recordings = self._timeseries[channel_idxs, start_frame:end_frame]
         return recordings
 
     @staticmethod

@@ -22,7 +22,7 @@ class TestTools(unittest.TestCase):
         shutil.rmtree(self.test_dir)
 
     def test_load_save_probes(self):
-        sub_RX = se.load_probe_file(self.RX, 'tests/probe_test.prb')
+        sub_RX = se.load_probe_file(self.RX, 'spikeextractors/tests/probe_test.prb')
         # print(SX.get_channel_property_names())
         assert 'location' in sub_RX.get_shared_channel_property_names()
         assert 'group' in sub_RX.get_shared_channel_property_names()
@@ -41,13 +41,13 @@ class TestTools(unittest.TestCase):
         n_group = 4
         for i in RX.get_channel_ids():
             channel_groups.append(i // n_group)
-        RX.set_channel_groups(RX.get_channel_ids(), channel_groups)
-        RX.save_to_probe_file('tests/probe_test_no_groups.prb')
-        RX.save_to_probe_file('tests/probe_test_groups.prb', grouping_property='group')
+        RX.set_channel_groups(channel_groups)
+        RX.save_to_probe_file('spikeextractors/tests/probe_test_no_groups.prb')
+        RX.save_to_probe_file('spikeextractors/tests/probe_test_groups.prb', grouping_property='group')
 
         # load
-        RX_loaded_no_groups = se.load_probe_file(RX, 'tests/probe_test_no_groups.prb')
-        RX_loaded_groups = se.load_probe_file(RX, 'tests/probe_test_groups.prb')
+        RX_loaded_no_groups = se.load_probe_file(RX, 'spikeextractors/tests/probe_test_no_groups.prb')
+        RX_loaded_groups = se.load_probe_file(RX, 'spikeextractors/tests/probe_test_groups.prb')
 
         assert len(np.unique(RX_loaded_no_groups.get_channel_groups())) == 1
         assert len(np.unique(RX_loaded_groups.get_channel_groups())) == RX.get_num_channels() // n_group
@@ -85,7 +85,6 @@ class TestTools(unittest.TestCase):
         data = np.memmap(open(self.test_dir + 'rec.dat'), dtype='float32', mode='r', shape=(nb_chan, nb_sample))
         assert np.allclose(data, self.RX.get_traces())
         del (data)  # this close the file
-
 
 if __name__ == '__main__':
     unittest.main()
