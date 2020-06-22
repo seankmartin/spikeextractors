@@ -5,7 +5,7 @@ import shutil
 import random
 from pathlib import Path
 from .extraction_tools import load_probe_file, save_to_probe_file, write_to_binary_dat_format, \
-    get_sub_extractors_by_property, cast_start_end_frame
+    write_to_h5_dataset_format, get_sub_extractors_by_property, cast_start_end_frame
 from .baseextractor import BaseExtractor
 
 
@@ -15,14 +15,17 @@ class RecordingExtractor(ABC, BaseExtractor):
     functions with the @abstractmethod tag must be implemented for the
     initialization to work.
     '''
+
+    _default_filename = "spikeinterface_recording"
+
     def __init__(self):
         BaseExtractor.__init__(self)
+        self._key_properties = {'group': None, 'location': None}
         self._epochs = {}
-        self._channel_properties = {}
         self.id = random.randint(a=0, b=9223372036854775807)
 
     def __del__(self):
-        if self._tmp_folder is not None:
+        if getattr(self, '_tmp_folder', None):
             try:
                 shutil.rmtree(self._tmp_folder)
             except Exception as e:
@@ -106,8 +109,6 @@ class RecordingExtractor(ABC, BaseExtractor):
         num_channels: int
             Number of channels in the recording
         '''
-        # print('WARNING: this is a temporary warning. You should use get_channel_ids() to iterate through the channels. '
-        #       'This warning will be removed in future versions of SpikeInterface.')
         return len(self.get_channel_ids())
 
     def get_dtype(self):
@@ -174,11 +175,11 @@ class RecordingExtractor(ABC, BaseExtractor):
         '''
         # Default implementation
         if isinstance(snippet_len, (tuple, list, np.ndarray)):
-            snippet_len_before = snippet_len[0]
-            snippet_len_after = snippet_len[1]
+            snippet_len_before = int(snippet_len[0])
+            snippet_len_after = int(snippet_len[1])
         else:
             snippet_len_before = int((snippet_len + 1) / 2)
-            snippet_len_after = snippet_len - snippet_len_before
+            snippet_len_after = int(snippet_len - snippet_len_before)
 
         if channel_ids is None:
             channel_ids = self.get_channel_ids()
@@ -187,14 +188,14 @@ class RecordingExtractor(ABC, BaseExtractor):
         num_channels = len(channel_ids)
         num_frames = self.get_num_frames()
         snippet_len_total = int(snippet_len_before + snippet_len_after)
-        snippets = np.zeros((num_snippets, num_channels, snippet_len_total))
+        snippets = np.zeros((num_snippets, num_channels, snippet_len_total), dtype=self.get_dtype())
 
         for i in range(num_snippets):
-            snippet_chunk = np.zeros((num_channels, snippet_len_total))
+            snippet_chunk = np.zeros((num_channels, snippet_len_total), dtype=self.get_dtype())
             if 0 <= reference_frames[i] < num_frames:
-                snippet_range = np.array(
-                    [int(reference_frames[i]) - snippet_len_before, int(reference_frames[i]) + snippet_len_after])
-                snippet_buffer = np.array([0, snippet_len_total])
+                snippet_range = np.array([int(reference_frames[i]) - snippet_len_before,
+                                          int(reference_frames[i]) + snippet_len_after])
+                snippet_buffer = np.array([0, snippet_len_total], dtype='int')
                 # The following handles the out-of-bounds cases
                 if snippet_range[0] < 0:
                     snippet_buffer[0] -= snippet_range[0]
@@ -214,45 +215,65 @@ class RecordingExtractor(ABC, BaseExtractor):
 
         Parameters
         ----------
-        channel_ids: array_like
+        channel_ids: array-like or int
             The channel ids (ints) for which the locations will be specified
         locations: array_like
             A list of corresponding locations (array_like) for the given channel_ids
         '''
         if channel_ids is None:
-            channel_ids = self.get_channel_ids()
+            channel_ids = list(self.get_channel_ids())
+        if isinstance(channel_ids, (int, np.integer)):
+            channel_ids = [channel_ids]
+            locations = [locations]
+        if self._key_properties['location'] is None:
+            self._key_properties['location'] = np.empty((self.get_num_channels(), 3), dtype='float')
         if len(channel_ids) == len(locations):
             for i in range(len(channel_ids)):
-                if isinstance(locations[i], (list, np.ndarray)):
+                if isinstance(locations[i], (list, np.ndarray, tuple)):
                     location = np.asarray(locations[i])
-                    self.set_channel_property(channel_ids[i], 'location', location.astype(float))
+                    channel_idx = list(self.get_channel_ids()).index(channel_ids[i])
+                    if len(location) == 2:
+                        self._key_properties['location'][channel_idx, :2] = location
+                    elif len(location) == 3:
+                        self._key_properties['location'][channel_idx] = location
+                    else:
+                        raise TypeError("'location' must be 2d ior 3d")
                 else:
-                    raise TypeError(str(locations[i]) + " must be an array_like")
+                    raise TypeError("'location' must be an array like object")
         else:
             raise ValueError("channel_ids and locations must have same length")
 
-    def get_channel_locations(self, channel_ids=None):
+    def get_channel_locations(self, channel_ids=None, locations_2d=True):
         '''This function returns the location of each channel specifed by
         channel_ids
 
         Parameters
         ----------
-        channel_ids: array_like
+        channel_ids: array-like or int
             The channel ids (ints) for which the locations will be returned
+        locations_2s: bool
+            If True (default), first two dimensions are returned
 
         Returns
         ----------
         locations: array_like
-            Returns a list of corresonding locations (floats) for the given
+            Returns a list of corresponding locations (floats) for the given
             channel_ids
         '''
         if channel_ids is None:
-            channel_ids = self.get_channel_ids()
-        locations = []
-        for channel_id in channel_ids:
-            location = self.get_channel_property(channel_id, 'location')
-            locations.append(location)
-        return np.array(locations)
+            channel_ids = list(self.get_channel_ids())
+        if isinstance(channel_ids, (int, np.integer)):
+            channel_ids = [channel_ids]
+        locations = self._key_properties['location']
+        if locations is None:
+            locations = np.empty((self.get_num_channels(), 3), dtype='float')
+            locations[:] = np.nan
+            self._key_properties['location'] = locations
+        locations = np.array(locations)
+        channel_idxs = np.array([list(self.get_channel_ids()).index(ch) for ch in channel_ids])
+        if locations_2d:
+            locations = np.array(locations)[:, :2]
+        return locations[channel_idxs]
 
     def set_channel_groups(self, groups, channel_ids=None):
         '''This function sets the group property of each specified channel
@@ -260,19 +281,26 @@ class RecordingExtractor(ABC, BaseExtractor):
 
         Parameters
         ----------
-        groups: array_like
+        groups: array-like or int
             A list of groups (ints) for the channel_ids
         channel_ids: array_like or None
             The channel ids (ints) for which the groups will be specified. If None, all channel ids are assumed
         '''
         if channel_ids is None:
-            channel_ids = self.get_channel_ids()
+            channel_ids = list(self.get_channel_ids())
+        if isinstance(channel_ids, (int, np.integer)):
+            channel_ids = [channel_ids]
+        if isinstance(groups, (int, np.integer)):
+            groups = [groups]
+        if self._key_properties['group'] is None:
+            self._key_properties['group'] = np.zeros(self.get_num_channels(), dtype='int')
         if len(channel_ids) == len(groups):
             for i in range(len(channel_ids)):
                 if isinstance(groups[i], (int, np.integer)):
-                    self.set_channel_property(channel_ids[i], 'group', groups[i])
+                    channel_idx = list(self.get_channel_ids()).index(channel_ids[i])
+                    self._key_properties['group'][channel_idx] = int(groups[i])
                 else:
-                    raise TypeError(str(groups[i]) + " must be an int")
+                    raise TypeError("'group' must be an int")
         else:
             raise ValueError("channel_ids and groups must have same length")
 
@@ -282,7 +310,7 @@ class RecordingExtractor(ABC, BaseExtractor):
 
         Parameters
         ----------
-        channel_ids: array_like
+        channel_ids: array-like or int
             The channel ids (ints) for which the groups will be returned
 
         Returns
@@ -292,12 +320,16 @@ class RecordingExtractor(ABC, BaseExtractor):
             channel_ids
         '''
         if channel_ids is None:
-            channel_ids = self.get_channel_ids()
-        groups = []
-        for channel_id in channel_ids:
-            group = self.get_channel_property(channel_id, 'group')
-            groups.append(group)
-        return groups
+            channel_ids = list(self.get_channel_ids())
+        if isinstance(channel_ids, (int, np.integer)):
+            channel_ids = [channel_ids]
+        groups = self._key_properties['group']
+        if groups is None:
+            groups = np.zeros(self.get_num_channels(), dtype='int')
+            self._key_properties['group'] = groups
+        groups = np.array(groups)
+        channel_idxs = np.array([list(self.get_channel_ids()).index(ch) for ch in channel_ids])
+        return groups[channel_idxs]
 
     def set_channel_gains(self, channel_ids, gains):
         '''This function sets the gain property of each specified channel
@@ -364,12 +396,15 @@ class RecordingExtractor(ABC, BaseExtractor):
             The data associated with the given property name. Could be many
             formats as specified by the user
         '''
+        if property_name in self._key_properties.keys():
+            fun = eval(f"self.set_channel_{property_name}s")
+            fun(value, channel_id)
         if isinstance(channel_id, (int, np.integer)):
             if channel_id in self.get_channel_ids():
-                if channel_id not in self._channel_properties:
-                    self._channel_properties[channel_id] = {}
+                if channel_id not in self._properties.keys():
+                    self._properties[channel_id] = {}
                 if isinstance(property_name, str):
-                    self._channel_properties[channel_id][property_name] = value
+                    self._properties[channel_id][property_name] = value
                 else:
                     raise TypeError(str(property_name) + " must be a string")
             else:
@@ -394,17 +429,19 @@ class RecordingExtractor(ABC, BaseExtractor):
             The data associated with the given property name. Could be many
             formats as specified by the user
         '''
+        if property_name in self._key_properties.keys():
+            return eval(f"self.get_channel_{property_name}s")(channel_id)[0]
         if not isinstance(channel_id, (int, np.integer)):
             raise TypeError(str(channel_id) + " must be an int")
         if channel_id not in self.get_channel_ids():
             raise ValueError(str(channel_id) + " is not a valid channel_id")
-        if channel_id not in self._channel_properties:
+        if channel_id not in self._properties.keys():
             raise ValueError('no properties found for channel' + str(channel_id))
-        if property_name not in self._channel_properties[channel_id]:
+        if property_name not in self._properties[channel_id]:
             raise RuntimeError(str(property_name) + " has not been added to channel " + str(channel_id))
         if not isinstance(property_name, str):
             raise TypeError(str(property_name) + " must be a string")
-        return self._channel_properties[channel_id][property_name]
+        return self._properties[channel_id][property_name]
 
     def get_channel_property_names(self, channel_id):
         '''Get a list of property names for a given channel.
@@ -420,10 +457,13 @@ class RecordingExtractor(ABC, BaseExtractor):
         '''
         if isinstance(channel_id, (int, np.integer)):
             if channel_id in self.get_channel_ids():
-                if channel_id not in self._channel_properties:
-                    self._channel_properties[channel_id] = {}
-                property_names = sorted(self._channel_properties[channel_id].keys())
-                return property_names
+                if channel_id not in self._properties.keys():
+                    self._properties[channel_id] = {}
+                property_names = list(self._properties[channel_id].keys())
+                if np.any(np.logical_not(np.isnan(self.get_channel_locations(channel_id)))):
+                    property_names.extend(['location'])
+                property_names.extend(['group'])
+                return sorted(property_names)
             else:
                 raise ValueError(str(channel_id) + " is not a valid channel_id")
         else:
@@ -443,13 +483,12 @@ class RecordingExtractor(ABC, BaseExtractor):
         '''
         if channel_ids is None:
             channel_ids = self.get_channel_ids()
-        property_names = []
         curr_property_name_set = set(self.get_channel_property_names(channel_id=channel_ids[0]))
         for channel_id in channel_ids[1:]:
             curr_channel_property_name_set = set(self.get_channel_property_names(channel_id=channel_id))
             curr_property_name_set = curr_property_name_set.intersection(curr_channel_property_name_set)
-        property_names = sorted(list(curr_property_name_set))
-        return property_names
+        property_names = list(curr_property_name_set)
+        return sorted(property_names)
 
     def copy_channel_properties(self, recording, channel_ids=None):
         '''Copy channel properties from another recording extractor to the current
@@ -464,18 +503,14 @@ class RecordingExtractor(ABC, BaseExtractor):
         '''
         if channel_ids is None:
             channel_ids = recording.get_channel_ids()
-        if isinstance(channel_ids, int):
-            curr_property_names = recording.get_channel_property_names(channel_id=channel_ids)
+        if isinstance(channel_ids, (int, np.integer)):
+            channel_ids = [channel_ids]
+        for channel_id in channel_ids:
+            curr_property_names = recording.get_channel_property_names(channel_id=channel_id)
             for curr_property_name in curr_property_names:
-                value = recording.get_channel_property(channel_id=channel_ids, property_name=curr_property_name)
-                self.set_channel_property(channel_id=channel_ids, property_name=curr_property_name, value=value)
-        else:
-            for channel_id in channel_ids:
-                curr_property_names = recording.get_channel_property_names(channel_id=channel_id)
-                for curr_property_name in curr_property_names:
-                    value = recording.get_channel_property(channel_id=channel_id, property_name=curr_property_name)
-                    self.set_channel_property(channel_id=channel_id, property_name=curr_property_name, value=value)
-    
+                value = recording.get_channel_property(channel_id=channel_id, property_name=curr_property_name)
+                self.set_channel_property(channel_id=channel_id, property_name=curr_property_name, value=value)
+
     def clear_channel_property(self, channel_id, property_name):
         '''This function clears the channel property for the given property.
 
@@ -486,9 +521,9 @@ class RecordingExtractor(ABC, BaseExtractor):
         property_name: string
             The name of the property to be cleared
         '''
-        if channel_id in self._channel_properties:
-            if property_name in self._channel_properties[channel_id]:
-                del self._channel_properties[channel_id][property_name]
+        if channel_id in self._properties.keys():
+            if property_name in self._properties[channel_id]:
+                del self._properties[channel_id][property_name]
 
     def clear_channels_property(self, property_name, channel_ids=None):
         '''This function clears the channels' properties for the given property.
@@ -504,7 +539,7 @@ class RecordingExtractor(ABC, BaseExtractor):
             channel_ids = self.get_channel_ids()
         for channel_id in channel_ids:
             self.clear_channel_property(channel_id, property_name)
-            
+
     def add_epoch(self, epoch_name, start_frame, end_frame):
         '''This function adds an epoch to your recording extractor that tracks
         a certain time period in your recording. It is stored in an internal
@@ -609,8 +644,8 @@ class RecordingExtractor(ABC, BaseExtractor):
 
     def load_probe_file(self, probe_file, channel_map=None, channel_groups=None, verbose=False):
         '''This function returns a SubRecordingExtractor that contains information from the given
-        probe file (channel locations, groups, etc.) If a .prb file is given, then 'location' and 'group' 
-        information for each channel is added to the SubRecordingExtractor. If a .csv file is given, then 
+        probe file (channel locations, groups, etc.) If a .prb file is given, then 'location' and 'group'
+        information for each channel is added to the SubRecordingExtractor. If a .csv file is given, then
         it will only add 'location' to the SubRecordingExtractor.
 
         Parameters
@@ -627,7 +662,7 @@ class RecordingExtractor(ABC, BaseExtractor):
         subrecording = SubRecordingExtractor
             The extractor containing all of the probe information.
         '''
-        subrecording = load_probe_file(self, probe_file, channel_map=channel_map, 
+        subrecording = load_probe_file(self, probe_file, channel_map=channel_map,
                                        channel_groups=channel_groups, verbose=verbose)
         return subrecording
 
@@ -674,7 +709,35 @@ class RecordingExtractor(ABC, BaseExtractor):
         '''
         write_to_binary_dat_format(self, save_path=save_path, time_axis=time_axis, dtype=dtype, chunk_size=chunk_size,
                                    chunk_mb=chunk_mb)
-   
+
+    def write_to_h5_dataset_format(self, dataset_path, save_path=None, file_handle=None,
+                                   time_axis=0, dtype=None, chunk_size=None, chunk_mb=500):
+        '''Saves the traces of a recording extractor in an h5 dataset.
+
+        Parameters
+        ----------
+        recording: RecordingExtractor
+            The recording extractor object to be saved in .dat format
+        dataset_path: str
+            Path to dataset in h5 file (e.g. '/dataset')
+        save_path: str
+            The path to the file.
+        file_handle: file handle
+            The file handle to dump data. This can be used to append data to an header. In case file_handle is given,
+            the file is NOT closed after writing the binary data.
+        time_axis: 0 (default) or 1
+            If 0 then traces are transposed to ensure (nb_sample, nb_channel) in the file.
+            If 1, the traces shape (nb_channel, nb_sample) is kept in the file.
+        dtype: dtype
+            Type of the saved data. Default float32.
+        chunk_size: None or int
+            Number of chunks to save the file in. This avoid to much memory consumption for big files.
+            If None and 'chunk_mb' is given, the file is saved in chunks of 'chunk_mb' Mb (default 500Mb)
+        chunk_mb: None or int
+            Chunk size in Mb (default 500Mb)
+        '''
+        write_to_h5_dataset_format(self, dataset_path, save_path, file_handle, time_axis, dtype, chunk_size, chunk_mb)
+
     def get_sub_extractors_by_property(self, property_name, return_property_list=False):
         '''Returns a list of SubRecordingExtractors from this RecordingExtractor based on the given
         property_name (e.g. group)
@@ -696,11 +759,11 @@ class RecordingExtractor(ABC, BaseExtractor):
 
         '''
         if return_property_list:
-            sub_list, prop_list = get_sub_extractors_by_property(self, property_name=property_name, 
+            sub_list, prop_list = get_sub_extractors_by_property(self, property_name=property_name,
                                                                  return_property_list=return_property_list)
             return sub_list, prop_list
         else:
-            sub_list = get_sub_extractors_by_property(self, property_name=property_name, 
+            sub_list = get_sub_extractors_by_property(self, property_name=property_name,
                                                       return_property_list=return_property_list)
             return sub_list
 

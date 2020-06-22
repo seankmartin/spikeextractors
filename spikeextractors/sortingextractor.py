@@ -14,14 +14,13 @@ class SortingExtractor(ABC, BaseExtractor):
     from spiked sorted data given a spike sorting software. It is an abstract
     class so all functions with the @abstractmethod tag must be implemented for
     the initialization to work.
-
-
     '''
+
+    _default_filename = "spikeinterface_sorting"
+
     def __init__(self):
         BaseExtractor.__init__(self)
         self._epochs = {}
-        self._unit_properties = {}
-        self._unit_features = {}
         self._sampling_frequency = None
         self.id = np.random.randint(low=0, high=9223372036854775807, dtype='int64')
 
@@ -127,17 +126,21 @@ class SortingExtractor(ABC, BaseExtractor):
             The unit id for which the features will be set
         feature_name: str
             The name of the feature to be stored
-        value
+        value: array_like
             The data associated with the given feature name. Could be many
             formats as specified by the user.
+        indexes: array_like
+            The indices of the specified spikes (if the number of spike features
+            is less than the length of the uint's spike train). If None, it is
+            assumed that value has the same length as the spike train.
         '''
         if isinstance(unit_id, (int, np.integer)):
             if unit_id in self.get_unit_ids():
-                if unit_id not in self._unit_features.keys():
-                    self._unit_features[unit_id] = {}
+                if unit_id not in self._features.keys():
+                    self._features[unit_id] = {}
                 if indexes is None:
                     if isinstance(feature_name, str) and len(value) == len(self.get_unit_spike_train(unit_id)):
-                        self._unit_features[unit_id][feature_name] = value
+                        self._features[unit_id][feature_name] = value
                     else:
                         if not isinstance(feature_name, str):
                             raise ValueError("feature_name must be a string")
@@ -145,8 +148,12 @@ class SortingExtractor(ABC, BaseExtractor):
                             raise ValueError("feature values should have the same length as the spike train")
                 else:
                     if isinstance(feature_name, str) and len(value) == len(indexes):
-                        self._unit_features[unit_id][feature_name] = value
-                        self._unit_features[unit_id][feature_name + '_idxs'] = np.array(indexes)
+                        indexes = np.array(indexes)
+                        indexes_sorted_indices = np.argsort(indexes)
+                        value_sorted = value[indexes_sorted_indices]
+                        indexes_sorted = indexes[indexes_sorted_indices]
+                        self._features[unit_id][feature_name] = value_sorted
+                        self._features[unit_id][feature_name + '_idxs'] = indexes_sorted
                     else:
                         if not isinstance(feature_name, str):
                             raise ValueError("feature_name must be a string")
@@ -191,10 +198,10 @@ class SortingExtractor(ABC, BaseExtractor):
         start_frame, end_frame = self._cast_start_end_frame(start_frame, end_frame)
         if isinstance(unit_id, (int, np.integer)):
             if unit_id in self.get_unit_ids():
-                if unit_id not in self._unit_features.keys():
-                    self._unit_features[unit_id] = {}
+                if unit_id not in self._features.keys():
+                    self._features[unit_id] = {}
                 if isinstance(feature_name, str):
-                    if feature_name in self._unit_features[unit_id].keys():
+                    if feature_name in self._features[unit_id].keys():
                         spike_train = self.get_unit_spike_train(unit_id)
                         if start_frame is None:
                             start_frame = 0
@@ -202,12 +209,12 @@ class SortingExtractor(ABC, BaseExtractor):
                             end_frame = np.inf
                         if start_frame == 0 and end_frame == np.inf:
                             # keep memmap objects
-                            return self._unit_features[unit_id][feature_name]
+                            return self._features[unit_id][feature_name]
                         else:
-                            if len(self._unit_features[unit_id][feature_name]) == len(spike_train):
+                            if len(self._features[unit_id][feature_name]) == len(spike_train):
                                 spike_indices = np.where(np.logical_and(spike_train >= start_frame,
                                                                         spike_train < end_frame))
-                            elif len(self._unit_features[unit_id][feature_name]) < len(spike_train):
+                            elif len(self._features[unit_id][feature_name]) < len(spike_train):
                                 if not feature_name.endswith('idxs'):
                                     # retrieve features on the correct idxs
                                     assert feature_name + '_idxs' in self.get_unit_spike_feature_names(unit_id=unit_id)
@@ -227,10 +234,10 @@ class SortingExtractor(ABC, BaseExtractor):
                             else:
                                 raise ValueError(str(feature_name) + " dimensions are inconsistent for unit "
                                                  + str(unit_id))
-                            if isinstance(self._unit_features[unit_id][feature_name], list):
-                                return list(np.array(self._unit_features[unit_id][feature_name])[spike_indices])
+                            if isinstance(self._features[unit_id][feature_name], list):
+                                return list(np.array(self._features[unit_id][feature_name])[spike_indices])
                             else:
-                                return np.array(self._unit_features[unit_id][feature_name])[spike_indices]
+                                return np.array(self._features[unit_id][feature_name])[spike_indices]
                     else:
                         raise ValueError(str(feature_name) + " has not been added to unit " + str(unit_id))
                 else:
@@ -250,9 +257,9 @@ class SortingExtractor(ABC, BaseExtractor):
         feature_name: string
             The name of the feature to be cleared
         '''
-        if unit_id in self._unit_features:
-            if feature_name in self._unit_features[unit_id]:
-                del self._unit_features[unit_id][feature_name]
+        if unit_id in self._features.keys():
+            if feature_name in self._features[unit_id]:
+                del self._features[unit_id][feature_name]
 
     def clear_units_spike_features(self, feature_name, unit_ids=None):
         '''This function clears the units' spikes features for the given feature.
@@ -282,9 +289,9 @@ class SortingExtractor(ABC, BaseExtractor):
         '''
         if isinstance(unit_id, (int, np.integer)):
             if unit_id in self.get_unit_ids():
-                if unit_id not in self._unit_features:
-                    self._unit_features[unit_id] = {}
-                feature_names = sorted(self._unit_features[unit_id].keys())
+                if unit_id not in self._features.keys():
+                    self._features[unit_id] = {}
+                feature_names = sorted(self._features[unit_id].keys())
                 return feature_names
             else:
                 raise ValueError(str(unit_id) + " is not a valid unit_id")
@@ -305,11 +312,14 @@ class SortingExtractor(ABC, BaseExtractor):
         '''
         if unit_ids is None:
             unit_ids = self.get_unit_ids()
-        curr_feature_name_set = set(self.get_unit_spike_feature_names(unit_id=unit_ids[0]))
-        for unit_id in unit_ids[1:]:
-            curr_unit_feature_name_set = set(self.get_unit_spike_feature_names(unit_id=unit_id))
-            curr_feature_name_set = curr_feature_name_set.intersection(curr_unit_feature_name_set)
-        feature_names = sorted(list(curr_feature_name_set))
+        if len(unit_ids) > 0:
+            curr_feature_name_set = set(self.get_unit_spike_feature_names(unit_id=unit_ids[0]))
+            for unit_id in unit_ids[1:]:
+                curr_unit_feature_name_set = set(self.get_unit_spike_feature_names(unit_id=unit_id))
+                curr_feature_name_set = curr_feature_name_set.intersection(curr_unit_feature_name_set)
+            feature_names = sorted(list(curr_feature_name_set))
+        else:
+            feature_names = []
         return feature_names
 
     def set_unit_property(self, unit_id, property_name, value):
@@ -328,10 +338,10 @@ class SortingExtractor(ABC, BaseExtractor):
         '''
         if isinstance(unit_id, (int, np.integer)):
             if unit_id in self.get_unit_ids():
-                if unit_id not in self._unit_properties:
-                    self._unit_properties[unit_id] = {}
+                if unit_id not in self._properties.keys():
+                    self._properties[unit_id] = {}
                 if isinstance(property_name, str):
-                    self._unit_properties[unit_id][property_name] = value
+                    self._properties[unit_id][property_name] = value
                 else:
                     raise ValueError(str(property_name) + " must be a string")
             else:
@@ -375,11 +385,11 @@ class SortingExtractor(ABC, BaseExtractor):
         '''
         if isinstance(unit_id, (int, np.integer)):
             if unit_id in self.get_unit_ids():
-                if unit_id not in self._unit_properties:
-                    self._unit_properties[unit_id] = {}
+                if unit_id not in self._properties.keys():
+                    self._properties[unit_id] = {}
                 if isinstance(property_name, str):
-                    if property_name in list(self._unit_properties[unit_id].keys()):
-                        return self._unit_properties[unit_id][property_name]
+                    if property_name in list(self._properties[unit_id].keys()):
+                        return self._properties[unit_id][property_name]
                     else:
                         raise ValueError(str(property_name) + " has not been added to unit " + str(unit_id))
                 else:
@@ -423,9 +433,9 @@ class SortingExtractor(ABC, BaseExtractor):
         '''
         if isinstance(unit_id, (int, np.integer)):
             if unit_id in self.get_unit_ids():
-                if unit_id not in self._unit_properties:
-                    self._unit_properties[unit_id] = {}
-                property_names = sorted(self._unit_properties[unit_id].keys())
+                if unit_id not in self._properties.keys():
+                    self._properties[unit_id] = {}
+                property_names = sorted(self._properties[unit_id].keys())
                 return property_names
             else:
                 raise ValueError(str(unit_id) + " is not a valid unit id")
@@ -446,11 +456,14 @@ class SortingExtractor(ABC, BaseExtractor):
         '''
         if unit_ids is None:
             unit_ids = self.get_unit_ids()
-        curr_property_name_set = set(self.get_unit_property_names(unit_id=unit_ids[0]))
-        for unit_id in unit_ids[1:]:
-            curr_unit_property_name_set = set(self.get_unit_property_names(unit_id=unit_id))
-            curr_property_name_set = curr_property_name_set.intersection(curr_unit_property_name_set)
-        property_names = sorted(list(curr_property_name_set))
+        if len(unit_ids) > 0:
+            curr_property_name_set = set(self.get_unit_property_names(unit_id=unit_ids[0]))
+            for unit_id in unit_ids[1:]:
+                curr_unit_property_name_set = set(self.get_unit_property_names(unit_id=unit_id))
+                curr_property_name_set = curr_property_name_set.intersection(curr_unit_property_name_set)
+            property_names = sorted(list(curr_property_name_set))
+        else:
+            property_names = []
         return property_names
 
     def copy_unit_properties(self, sorting, unit_ids=None):
@@ -488,9 +501,9 @@ class SortingExtractor(ABC, BaseExtractor):
         property_name: string
             The name of the property to be cleared
         '''
-        if unit_id in self._unit_properties:
-            if property_name in self._unit_properties[unit_id]:
-                del self._unit_properties[unit_id][property_name]
+        if unit_id in self._properties.keys():
+            if property_name in self._properties[unit_id]:
+                del self._properties[unit_id][property_name]
 
     def clear_units_property(self, property_name, unit_ids=None):
         '''This function clears the units' properties for the given property.
@@ -686,3 +699,33 @@ class SortingExtractor(ABC, BaseExtractor):
         '''
         raise NotImplementedError("The write_sorting function is not \
                                   implemented for this extractor")
+
+    def get_unsorted_spike_train(self, start_frame=None, end_frame=None):
+        '''This function extracts spike frames from the unsorted events.
+        It will return spike frames from within three ranges:
+
+            [start_frame, t_start+1, ..., end_frame-1]
+            [start_frame, start_frame+1, ..., final_unit_spike_frame - 1]
+            [0, 1, ..., end_frame-1]
+            [0, 1, ..., final_unit_spike_frame - 1]
+
+        if both start_frame and end_frame are given, if only start_frame is
+        given, if only end_frame is given, or if neither start_frame or end_frame
+        are given, respectively. Spike frames are returned in the form of an
+        array_like of spike frames. In this implementation, start_frame is inclusive
+        and end_frame is exclusive conforming to numpy standards.
+
+        Parameters
+        ----------
+        start_frame: int
+            The frame above which a spike frame is returned  (inclusive)
+        end_frame: int
+            The frame below which a spike frame is returned  (exclusive)
+        Returns
+        ----------
+        spike_train: numpy.ndarray
+            An 1D array containing all the frames for each spike in the
+            specified unit given the range of start and end frames
+        '''
+
+        raise NotImplementedError

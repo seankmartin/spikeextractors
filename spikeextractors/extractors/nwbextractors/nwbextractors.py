@@ -4,9 +4,10 @@ from datetime import datetime
 from collections import defaultdict, abc
 from pathlib import Path
 import numpy as np
+import distutils.version
 
 import spikeextractors as se
-from spikeextractors.extraction_tools import check_get_traces_args
+from spikeextractors.extraction_tools import check_get_traces_args, check_valid_unit_id
 
 try:
     import pynwb
@@ -143,10 +144,10 @@ class NwbRecordingExtractor(se.RecordingExtractor):
         file_path: path to NWB file
         electrical_series_name: str, optional
         """
-        check_nwb_install()
+        assert HAVE_NWB, self.installation_mesg
         se.RecordingExtractor.__init__(self)
         self._path = file_path
-        with NWBHDF5IO(self._path, 'a') as io:
+        with NWBHDF5IO(self._path, 'r') as io:
             nwbfile = io.read()
             if electrical_series_name is not None:
                 self._electrical_series_name = electrical_series_name
@@ -183,9 +184,8 @@ class NwbRecordingExtractor(se.RecordingExtractor):
 
             # Fill channel properties dictionary from electrodes table
             self.channel_ids = es.electrodes.table.id[:]
-            self._channel_properties = defaultdict(dict)
             for ind, i in enumerate(self.channel_ids):
-                self._channel_properties[i]['gain'] = gains[ind]
+                self.set_channel_property(i, 'gain', gains[ind])
                 this_loc = []
                 if 'rel_x' in nwbfile.electrodes:
                     this_loc.append(nwbfile.electrodes['rel_x'][ind])
@@ -193,19 +193,19 @@ class NwbRecordingExtractor(se.RecordingExtractor):
                         this_loc.append(nwbfile.electrodes['rel_y'][ind])
                     else:
                         this_loc.append(0)
-                    self._channel_properties[i]['location'] = this_loc
+                    self.set_channel_locations(this_loc, i)
 
                 for col in nwbfile.electrodes.colnames:
                     if isinstance(nwbfile.electrodes[col][ind], ElectrodeGroup):
                         continue
                     elif col == 'group_name':
-                        self._channel_properties[i]['group'] = int(unique_grp_names.index(nwbfile.electrodes[col][ind]))
+                        self.set_channel_groups(int(unique_grp_names.index(nwbfile.electrodes[col][ind])), i)
                     elif col == 'location':
-                        self._channel_properties[i]['brain_area'] = nwbfile.electrodes[col][ind]
+                        self.set_channel_property(i, 'brain_area', nwbfile.electrodes[col][ind])
                     elif col in ['x', 'y', 'z', 'rel_x', 'rel_y']:
                         continue
                     else:
-                        self._channel_properties[i][col] = nwbfile.electrodes[col][ind]
+                        self.set_channel_property(i, col, nwbfile.electrodes[col][ind])
 
             # Fill epochs dictionary
             self._epochs = {}
@@ -252,11 +252,11 @@ class NwbRecordingExtractor(se.RecordingExtractor):
 
     @check_get_traces_args
     def get_traces(self, channel_ids=None, start_frame=None, end_frame=None):
-        check_nwb_install()
         with NWBHDF5IO(self._path, 'r') as io:
             nwbfile = io.read()
             es = nwbfile.acquisition[self._electrical_series_name]
-            table_ids = [list(es.electrodes.data[:]).index(id) for id in channel_ids]
+            es_channel_ids = np.array(es.electrodes.table.id[:])[es.electrodes.data[:]].tolist()
+            table_ids = [es_channel_ids.index(id) for id in channel_ids]
             if np.array(channel_ids).size > 1 and np.any(np.diff(channel_ids) < 0):
                 sorted_idx = np.argsort(table_ids)
                 recordings = es.data[start_frame:end_frame, np.sort(table_ids)].T
@@ -344,7 +344,7 @@ class NwbRecordingExtractor(se.RecordingExtractor):
         nwb_groups_names = list(nwbfile.electrode_groups.keys())
 
         # For older versions of pynwb, we need to manually add these columns
-        if pynwb.__version__ < '1.3.0':
+        if distutils.version.LooseVersion(pynwb.__version__) < '1.3.0':
             if nwbfile.electrodes is None or 'rel_x' not in nwbfile.electrodes.colnames:
                 nwbfile.add_electrode_column('rel_x', 'x position of electrode in electrode group')
             if nwbfile.electrodes is None or 'rel_y' not in nwbfile.electrodes.colnames:
@@ -354,22 +354,15 @@ class NwbRecordingExtractor(se.RecordingExtractor):
         channel_ids = recording.get_channel_ids()
         for m in channel_ids:
             if m not in nwb_elec_ids:
-                if 'location' in recording.get_channel_property_names(m):
-                    location = recording.get_channel_property(m, 'location')
-                    while len(location) < 2:
-                        location = np.append(location, [0])
-                else:
-                    location = [np.nan, np.nan]
-                if 'group' in recording.get_channel_property_names(m):
-                    grp_name = recording.get_channel_groups(channel_ids=[m])
-                    grp = nwbfile.electrode_groups[nwb_groups_names[grp_name[0]]]
-                else:
-                    grp = nwbfile.electrode_groups[nwb_groups_names[0]]
+                location = recording.get_channel_locations(channel_ids=m)[0]
+                grp_name = recording.get_channel_groups(channel_ids=m)[0]
+                grp = nwbfile.electrode_groups[nwb_groups_names[grp_name]]
                 impedance = -1.0
                 nwbfile.add_electrode(
                     id=m,
                     x=np.nan, y=np.nan, z=np.nan,
-                    rel_x=float(location[0]), rel_y=float(location[1]),
+                    rel_x=float(location[0]),
+                    rel_y=float(location[1]),
                     imp=impedance,
                     location='unknown',
                     filtering='none',
@@ -520,7 +513,11 @@ class NwbRecordingExtractor(se.RecordingExtractor):
         metadata: dict
             metadata info for constructing the nwb file (optional).
         '''
-        check_nwb_install()
+        assert HAVE_NWB, NwbRecordingExtractor.installation_mesg
+
+        if distutils.version.LooseVersion(pynwb.__version__) >= '1.3.0':
+            print("'write_recording' not supported for version >= 1.3.0. Use version 1.2")
+            return
 
         if os.path.exists(save_path):
             read_mode = 'r+'
@@ -596,7 +593,7 @@ class NwbSortingExtractor(se.SortingExtractor):
         path: path to NWB file
         electrical_series: pynwb.ecephys.ElectricalSeries object
         """
-        check_nwb_install()
+        assert HAVE_NWB, self.installation_mesg
         se.SortingExtractor.__init__(self)
         self._path = file_path
         with NWBHDF5IO(self._path, 'r') as io:
@@ -633,11 +630,11 @@ class NwbSortingExtractor(se.SortingExtractor):
                 if item + '_index' in all_names:  # if it has index, it is a spike_feature
                     for id in units_ids:
                         ind = list(units_ids).index(id)
-                        self._unit_features.update({id: {item: nwbfile.units[item][ind]}})
+                        self.set_unit_spike_features(id, item, nwbfile.units[item][ind])
                 else:  # if it is unit_property
                     for id in units_ids:
                         ind = list(units_ids).index(id)
-                        self._unit_properties.update({id: {item: nwbfile.units[item][ind]}})
+                        self.set_unit_property(id, item, nwbfile.units[item][ind])
 
             # Fill epochs dictionary
             self._epochs = {}
@@ -664,6 +661,7 @@ class NwbSortingExtractor(se.SortingExtractor):
             unit_ids = [int(i) for i in nwbfile.units.id[:]]
         return unit_ids
 
+    @check_valid_unit_id
     def get_unit_spike_train(self, unit_id, start_frame=None, end_frame=None):
         start_frame, end_frame = self._cast_start_end_frame(start_frame, end_frame)
         if start_frame is None:
@@ -695,7 +693,7 @@ class NwbSortingExtractor(se.SortingExtractor):
         save_path: str
         nwbfile_kwargs: optional, pynwb.NWBFile args
         """
-        check_nwb_install()
+        assert HAVE_NWB, NwbSortingExtractor.installation_mesg
 
         ids = sorting.get_unit_ids()
         fs = sorting.get_sampling_frequency()
@@ -705,8 +703,8 @@ class NwbSortingExtractor(se.SortingExtractor):
             t0 = 0.
 
         (all_properties, all_features) = find_all_unit_property_names(
-            properties_dict=sorting._unit_properties,
-            features_dict=sorting._unit_features
+            properties_dict=sorting._properties,
+            features_dict=sorting._features
         )
 
         if os.path.exists(save_path):
@@ -732,9 +730,9 @@ class NwbSortingExtractor(se.SortingExtractor):
 
             # Units properties
             for pr in all_properties:
-                unit_ids = [int(k) for k, v in sorting._unit_properties.items()
+                unit_ids = [int(k) for k, v in sorting._properties.items()
                             if pr in v]
-                vals = [v[pr] for k, v in sorting._unit_properties.items()
+                vals = [v[pr] for k, v in sorting._properties.items()
                         if pr in v]
                 set_dynamic_table_property(
                     dynamic_table=nwbfile.units,
@@ -765,7 +763,7 @@ class NwbSortingExtractor(se.SortingExtractor):
             nspikes = {k: get_nspikes(nwbfile.units, int(k)) for k in ids}
             for ft in all_features:
                 vals = [v[ft] if ft in v else [np.nan] * nspikes[int(k)]
-                        for k, v in sorting._unit_features.items()]
+                        for k, v in sorting._features.items()]
                 flatten_vals = [item for sublist in vals for item in sublist]
                 nspks_list = [sp for sp in nspikes.values()]
                 spikes_index = np.cumsum(nspks_list).tolist()

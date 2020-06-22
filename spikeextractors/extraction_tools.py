@@ -8,6 +8,12 @@ import datetime
 from functools import wraps
 from spikeextractors.baseextractor import BaseExtractor
 
+try:
+    import h5py
+    HAVE_H5 = True
+except ImportError:
+    HAVE_H5 = False
+
 
 def read_python(path):
     '''Parses python scripts in a dictionary
@@ -108,14 +114,14 @@ def load_probe_file(recording, probe_file, channel_map=None, channel_groups=None
                     if key_prop == 'channels':
                         for i_ch, prop in enumerate(prop_val):
                             if prop in subrecording.get_channel_ids():
-                                subrecording.set_channel_property(prop, 'group', int(cgroup_id))
+                                subrecording.set_channel_groups(int(cgroup_id), channel_ids=prop)
                     elif key_prop == 'geometry' or key_prop == 'location':
                         if isinstance(prop_val, dict):
                             if len(prop_val.keys()) != channels_in_group and verbose:
                                 print('geometry in PRB does not have the same length as channel in group')
                             for (i_ch, prop) in prop_val.items():
                                 if i_ch in subrecording.get_channel_ids():
-                                    subrecording.set_channel_property(i_ch, 'location', prop)
+                                    subrecording.set_channel_locations(prop, channel_ids=i_ch)
                         elif isinstance(prop_val, (list, np.ndarray)) and len(prop_val) == channels_in_group:
                             if 'channels' not in cgroup.keys():
                                 raise Exception("'geometry'/'location' in the .prb file can be a list only if "
@@ -124,7 +130,7 @@ def load_probe_file(recording, probe_file, channel_map=None, channel_groups=None
                                 print('geometry in PRB does not have the same length as channel in group')
                             for (i_ch, prop) in zip(channels_id_in_group, prop_val):
                                 if i_ch in subrecording.get_channel_ids():
-                                    subrecording.set_channel_property(i_ch, 'location', prop)
+                                    subrecording.set_channel_locations(prop, channel_ids=i_ch)
                     else:
                         if isinstance(prop_val, dict) and len(prop_val.keys()) == channels_in_group:
                             for (i_ch, prop) in prop_val.items():
@@ -136,8 +142,10 @@ def load_probe_file(recording, probe_file, channel_map=None, channel_groups=None
                                     subrecording.set_channel_property(i_ch, key_prop, prop)
                 # create dummy locations
                 if 'geometry' not in cgroup.keys() and 'location' not in cgroup.keys():
-                    for i, chan in enumerate(subrecording.get_channel_ids()):
-                        subrecording.set_channel_property(chan, 'location', [0, i])
+                    if 'location' not in subrecording.get_shared_channel_property_names():
+                        locs = np.zeros((subrecording.get_num_channels(), 2))
+                        locs[:, 1] = np.arange(subrecording.get_num_channels())
+                        subrecording.set_channel_locations(locs)
         else:
             raise AttributeError("'.prb' file should contain the 'channel_groups' field")
 
@@ -159,11 +167,11 @@ def load_probe_file(recording, probe_file, channel_map=None, channel_groups=None
                                                                      "rows as the number of channels in the recordings"
             for i_ch, pos in zip(subrecording.get_channel_ids(), loaded_pos):
                 if i_ch in subrecording.get_channel_ids():
-                    subrecording.set_channel_property(i_ch, 'location', list(np.array(pos).astype(float)))
+                    subrecording.set_channel_locations(list(np.array(pos).astype(float)), i_ch)
             if channel_groups is not None and len(channel_groups) == len(subrecording.get_channel_ids()):
                 for i_ch, chg in zip(subrecording.get_channel_ids(), channel_groups):
                     if i_ch in subrecording.get_channel_ids():
-                        subrecording.set_channel_property(i_ch, 'group', chg)
+                        subrecording.set_channel_groups(chg, i_ch)
     else:
         raise NotImplementedError("Only .csv and .prb probe files can be loaded.")
 
@@ -202,7 +210,7 @@ def save_to_probe_file(recording, probe_file, grouping_property=None, radius=Non
         with probe_file.open('w') as f:
             if 'location' in recording.get_shared_channel_property_names():
                 for chan in recording.get_channel_ids():
-                    loc = recording.get_channel_property(chan, 'location')
+                    loc = recording.get_channel_locations(chan)[0]
                     if len(loc) == 2:
                         f.write(str(loc[0]))
                         f.write(',')
@@ -299,7 +307,7 @@ def write_to_binary_dat_format(recording, save_path=None, file_handle=None,
     if chunk_size is not None:
         chunk_size = int(chunk_size)
     elif chunk_mb is not None:
-        n_bytes = recording.get_dtype().itemsize
+        n_bytes = np.dtype(recording.get_dtype()).itemsize
         max_size = int(chunk_mb * 1e6)  # set Mb per chunk
         chunk_size = max_size // (recording.get_num_channels() * n_bytes)
 
@@ -339,6 +347,97 @@ def write_to_binary_dat_format(recording, save_path=None, file_handle=None,
                 if time_axis == 0:
                     traces = traces.T
                 file_handle.write(traces.tobytes())
+    return save_path
+
+
+def write_to_h5_dataset_format(recording, dataset_path, save_path=None, file_handle=None,
+                               time_axis=0, dtype=None, chunk_size=None, chunk_mb=500):
+    '''Saves the traces of a recording extractor in an h5 dataset.
+
+    Parameters
+    ----------
+    recording: RecordingExtractor
+        The recording extractor object to be saved in .dat format
+    dataset_path: str
+        Path to dataset in h5 filee (e.g. '/dataset')
+    save_path: str
+        The path to the file.
+    file_handle: file handle
+        The file handle to dump data. This can be used to append data to an header. In case file_handle is given,
+        the file is NOT closed after writing the binary data.
+    time_axis: 0 (default) or 1
+        If 0 then traces are transposed to ensure (nb_sample, nb_channel) in the file.
+        If 1, the traces shape (nb_channel, nb_sample) is kept in the file.
+    dtype: dtype
+        Type of the saved data. Default float32.
+    chunk_size: None or int
+        Number of chunks to save the file in. This avoid to much memory consumption for big files.
+        If None and 'chunk_mb' is given, the file is saved in chunks of 'chunk_mb' Mb (default 500Mb)
+    chunk_mb: None or int
+        Chunk size in Mb (default 500Mb)
+    '''
+    assert HAVE_H5, "To write to h5 you need to install h5py: pip install h5py"
+    assert save_path is not None or file_handle is not None, "Provide 'save_path' or 'file handle'"
+
+    if save_path is not None:
+        save_path = Path(save_path)
+        if save_path.suffix == '':
+            # when suffix is already raw/bin/dat do not change it.
+            save_path = save_path.parent / (save_path.name + '.h5')
+
+    num_channels = recording.get_num_channels()
+    num_frames = recording.get_num_frames()
+
+    if file_handle is not None:
+        assert isinstance(file_handle, h5py.File)
+    else:
+        file_handle = h5py.File(save_path, 'w')
+
+    if dtype is None:
+        dtype_file = recording.get_dtype()
+    else:
+        dtype_file = dtype
+
+    if time_axis == 0:
+        dset = file_handle.create_dataset(dataset_path, shape=(num_frames, num_channels), dtype=dtype_file)
+    else:
+        dset = file_handle.create_dataset(dataset_path, shape=(num_channels, num_frames), dtype=dtype_file)
+
+    # set chunk size
+    if chunk_size is not None:
+        chunk_size = int(chunk_size)
+    elif chunk_mb is not None:
+        n_bytes = np.dtype(recording.get_dtype()).itemsize
+        max_size = int(chunk_mb * 1e6)  # set Mb per chunk
+        chunk_size = max_size // (num_channels * n_bytes)
+
+    if chunk_size is None:
+        traces = recording.get_traces()
+        if dtype is not None:
+            traces = traces.astype(dtype_file)
+        if time_axis == 0:
+            traces = traces.T
+        dset[:] = traces
+    else:
+        chunk_start = 0
+        # chunk size is not None
+        n_chunk = num_frames // chunk_size
+        if num_frames % chunk_size > 0:
+            n_chunk += 1
+        for i in range(n_chunk):
+            traces = recording.get_traces(start_frame=i * chunk_size,
+                                          end_frame=min((i + 1) * chunk_size, num_frames))
+            chunk_frames = traces.shape[1]
+            if dtype is not None:
+                traces = traces.astype(dtype_file)
+            if time_axis == 0:
+                dset[chunk_start:chunk_start + chunk_frames] = traces.T
+            else:
+                dset[:, chunk_start:chunk_start + chunk_frames] = traces
+            chunk_start += chunk_frames
+
+    if save_path is not None:
+        file_handle.close()
     return save_path
 
 
@@ -432,8 +531,7 @@ def _export_prb_file(recording, file_name, grouping_property=None, graph=True, g
 
     if geometry:
         if 'location' in recording.get_shared_channel_property_names():
-            positions = np.array([recording.get_channel_property(chan, 'location')
-                                  for chan in recording.get_channel_ids()])
+            positions = recording.get_channel_locations()
         else:
             if verbose:
                 print("'location' property is not available and it will not be saved.")
@@ -565,6 +663,43 @@ def load_extractor_from_dict(d):
     return BaseExtractor.load_extractor_from_dict(d)
 
 
+def load_extractor_from_pickle(pkl_file):
+    '''
+    Instantiates extractor from pickle file
+
+    Parameters
+    ----------
+    pkl_file: str or Path
+        Path to pickle file
+
+    Returns
+    -------
+    extractor: RecordingExtractor or SortingExtractor
+        The loaded extractor object
+    '''
+    return BaseExtractor.load_extractor_from_pickle(pkl_file)
+
+
+def check_valid_unit_id(func):
+    @wraps(func)
+    def check_validity(*args, **kwargs):
+        # parse args and kwargs
+        if len(args) == 1:
+            sorting = args[0]
+            unit_id = kwargs.get('unit_id', None)
+        else:
+            sorting = args[0]
+            unit_id = args[1]
+        if unit_id is None:
+            raise TypeError("get_unit_spike_train() missing 1 required positional argument: 'unit_id')")
+        elif not (isinstance(unit_id, (int, np.integer))):
+            raise ValueError("unit_id must be an integer")
+        elif unit_id not in sorting.get_unit_ids():
+            raise ValueError(f"{unit_id} is an invalid unit id")
+        return func(*args, **kwargs)
+    return check_validity
+
+
 def check_get_traces_args(func):
     @wraps(func)
     def corrected_args(*args, **kwargs):
@@ -609,7 +744,7 @@ def check_get_traces_args(func):
             start_frame = 0
         if end_frame is not None:
             if end_frame > recording.get_num_frames():
-                print("'end_time' set to", recording.get_num_frames())
+                print("'end_frame' set to", recording.get_num_frames())
                 end_frame = recording.get_num_frames()
             elif end_frame < 0:
                 end_frame = recording.get_num_frames() + end_frame

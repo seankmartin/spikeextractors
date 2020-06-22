@@ -11,7 +11,7 @@ https://github.com/kwikteam/phy-doc/blob/master/docs/kwik-model.md
 
 from spikeextractors import SortingExtractor
 from spikeextractors.extractors.bindatrecordingextractor import BinDatRecordingExtractor
-from spikeextractors.extraction_tools import read_python
+from spikeextractors.extraction_tools import read_python, check_valid_unit_id
 import numpy as np
 from pathlib import Path
 
@@ -33,7 +33,7 @@ class KlustaRecordingExtractor(BinDatRecordingExtractor):
     installation_mesg = "To use the KlustaSortingExtractor install h5py: \n\n pip install h5py\n\n"  # error message when not installed
 
     def __init__(self, folder_path):
-        assert HAVE_KLSX, "To use the KlustaSortingExtractor install h5py: \n\n pip install h5py\n\n"
+        assert HAVE_KLSX, self.installation_mesg
         klustafolder = Path(folder_path).absolute()
         config_file = [f for f in klustafolder.iterdir() if f.suffix == '.prm'][0]
         dat_file = [f for f in klustafolder.iterdir() if f.suffix == '.dat'][0]
@@ -60,7 +60,7 @@ class KlustaSortingExtractor(SortingExtractor):
     default_cluster_groups = {0: 'Noise', 1: 'MUA', 2: 'Good', 3: 'Unsorted'}
 
     def __init__(self, file_or_folder_path, exclude_cluster_groups=None):
-        assert HAVE_KLSX, "To use the KlustaSortingExtractor install h5py: \n\n pip install h5py\n\n"
+        assert HAVE_KLSX, self.installation_mesg
         SortingExtractor.__init__(self)
         kwik_file_or_folder = Path(file_or_folder_path)
         kwikfile = None
@@ -141,6 +141,7 @@ class KlustaSortingExtractor(SortingExtractor):
     def get_unit_ids(self):
         return list(self._unit_ids)
 
+    @check_valid_unit_id
     def get_unit_spike_train(self, unit_id, start_frame=None, end_frame=None):
         start_frame, end_frame = self._cast_start_end_frame(start_frame, end_frame)
         if start_frame is None:

@@ -2,6 +2,7 @@ from spikeextractors import SortingExtractor
 from spikeextractors.extractors.numpyextractors import NumpyRecordingExtractor
 import numpy as np
 from pathlib import Path
+from spikeextractors.extraction_tools import check_valid_unit_id
 
 try:
     import h5py
@@ -58,7 +59,7 @@ class SpykingCircusSortingExtractor(SortingExtractor):
     installation_mesg = "To use the SpykingCircusSortingExtractor install h5py: \n\n pip install h5py\n\n"
 
     def __init__(self, folder_path):
-        assert HAVE_SCSX, "To use the SpykingCircusSortingExtractor install h5py: \n\n pip install h5py\n\n"
+        assert HAVE_SCSX, self.installation_mesg
         SortingExtractor.__init__(self)
         spykingcircus_folder = Path(folder_path)
         listfiles = spykingcircus_folder.iterdir()
@@ -112,6 +113,7 @@ class SpykingCircusSortingExtractor(SortingExtractor):
     def get_unit_ids(self):
         return list(self._unit_ids)
 
+    @check_valid_unit_id
     def get_unit_spike_train(self, unit_id, start_frame=None, end_frame=None):
         start_frame, end_frame = self._cast_start_end_frame(start_frame, end_frame)
         if start_frame is None:
@@ -124,7 +126,7 @@ class SpykingCircusSortingExtractor(SortingExtractor):
 
     @staticmethod
     def write_sorting(sorting, save_path):
-        assert HAVE_SCSX, "To use the SpykingCircusSortingExtractor install h5py: \n\n pip install h5py\n\n"
+        assert HAVE_SCSX, SpykingCircusSortingExtractor.installation_mesg
         save_path = Path(save_path)
         if save_path.is_dir():
             save_path = save_path / 'data.result.hdf5'

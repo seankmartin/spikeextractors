@@ -16,9 +16,10 @@ class MaxOneRecordingExtractor(RecordingExtractor):
     installed = HAVE_MAX  # check at class level if installed or not
     is_writable = False
     mode = 'file'
-    installation_mesg = ""  # error message when not installed
+    installation_mesg = "To use the MaxOneRecordingExtractor install h5py: \n\n pip install h5py\n\n"  # error message when not installed
 
     def __init__(self, file_path):
+        assert HAVE_MAX, self.installation_mesg
         RecordingExtractor.__init__(self)
         self._file_path = file_path
         self._fs = None
@@ -32,18 +33,20 @@ class MaxOneRecordingExtractor(RecordingExtractor):
     def _initialize(self):
         self._filehandle = h5py.File(self._file_path, 'r')
         self._mapping = self._filehandle['mapping']
-        self._lsb = self._filehandle['settings']['lsb'][()] * 1e6
+        if 'lsb' in self._filehandle['settings'].keys():
+            self._lsb = self._filehandle['settings']['lsb'][()] * 1e6
+        else:
+            self._lsb = 1.
         channels = np.array(self._mapping['channel'])
         electrodes = np.array(self._mapping['electrode'])
         # remove unused channels
         self._channel_ids = list(channels[np.where(electrodes > 0)])
         self._num_channels = len(self._channel_ids)
         self._fs = float(20000)
-        self._signals = self._filehandle.get('sig')
         self._num_frames = self._signals.shape[1]
 
         for i_ch, ch in enumerate(self.get_channel_ids()):
-            self.set_channel_property(ch, 'location', [self._mapping['x'][i_ch], self._mapping['y'][i_ch]])
+            self.set_channel_locations([self._mapping['x'][i_ch], self._mapping['y'][i_ch]], ch)
 
     def get_channel_ids(self):
         return list(self._channel_ids)

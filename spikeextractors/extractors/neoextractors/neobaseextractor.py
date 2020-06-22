@@ -2,7 +2,7 @@ import numpy as np
 
 from spikeextractors import RecordingExtractor
 from spikeextractors import SortingExtractor
-from spikeextractors.extraction_tools import check_get_traces_args
+from spikeextractors.extraction_tools import check_get_traces_args, check_valid_unit_id
 
 try:
     import neo
@@ -10,10 +10,12 @@ try:
 except ImportError:
     HAVE_NEO = False
 
+
 class _NeoBaseExtractor:
     NeoRawIOClass = None
     installed = True
     is_writable = False
+    installation_mesg = "To use the Neo extractors, install Neo: \n\n pip install neo\n\n"
 
     def __init__(self, block_index=None, seg_index=None, **kargs):
         """
@@ -21,7 +23,7 @@ class _NeoBaseExtractor:
         if seg_index is None then check if only one segment
 
         """
-        assert HAVE_NEO, "To use the Neo extractors, install Neo: \n\n pip install neo\n\n"
+        assert HAVE_NEO, self.installation_mesg
         neoIOclass = eval('neo.rawio.' + self.NeoRawIOClass)
         self.neo_reader = neoIOclass(**kargs)
         self.neo_reader.parse_header()
@@ -29,13 +31,13 @@ class _NeoBaseExtractor:
         if block_index is None:
             # auto select first block
             num_block = self.neo_reader.block_count()
-            assert num_block == 1, 'This file is multi block spikeextractors support only one segment'
+            assert num_block == 1, 'This file is multi block spikeextractors support only one segment, please provide block_index='
             block_index = 0
 
         if seg_index is None:
             # auto select first segment
             num_seg = self.neo_reader.segment_count(block_index)
-            assert num_seg == 1, 'This file is multi segment spikeextractors support only one segment'
+            assert num_seg == 1, 'This file is multi segment spikeextractors support only one segment, please provide seg_index='
             seg_index = 0
 
         self.block_index = block_index
@@ -83,8 +85,9 @@ class NeoBaseRecordingExtractor(RecordingExtractor, _NeoBaseExtractor):
         scaled_traces = self.neo_reader.rescale_signal_raw_to_float(raw_traces, dtype='float32',
                                                                     channel_indexes=None, channel_names=None,
                                                                     channel_ids=channel_ids)
+        channel_idxs = np.array([list(channel_ids).index(ch) for ch in channel_ids])
         # and then to uV
-        scaled_traces *= self.additional_gain
+        scaled_traces *= self.additional_gain[:, channel_idxs]
 
         # fortunatly neo works with (samples, channels) strides
         # so transpose to spieextractors wolrd
@@ -110,7 +113,7 @@ class NeoBaseRecordingExtractor(RecordingExtractor, _NeoBaseExtractor):
         # so check it
         assert np.unique(chan_ids).size == chan_ids.size, 'In this format channel ids are not unique'
         # to avoid this limitation this could return chan_index which is 0...N-1
-        return chan_ids
+        return list(chan_ids)
 
 
 class NeoBaseSortingExtractor(SortingExtractor, _NeoBaseExtractor):
@@ -152,6 +155,7 @@ class NeoBaseSortingExtractor(SortingExtractor, _NeoBaseExtractor):
         unit_ids = np.arange(self.neo_reader.header['unit_channels'].size, dtype='int64')
         return unit_ids
 
+    @check_valid_unit_id
     def get_unit_spike_train(self, unit_id, start_frame=None, end_frame=None):
         start_frame, end_frame = self._cast_start_end_frame(start_frame, end_frame)
         # this is a string

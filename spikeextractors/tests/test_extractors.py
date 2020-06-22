@@ -7,6 +7,7 @@ import shutil
 import spikeextractors as se
 from .utils import check_sortings_equal, check_recordings_equal, check_dumping, check_recording_return_types, \
     check_sorting_return_types
+from spikeextractors.exceptions import NotDumpableExtractorError
 
 
 class TestExtractors(unittest.TestCase):
@@ -47,7 +48,7 @@ class TestExtractors(unittest.TestCase):
         SX2.add_unit(unit_id=5, times=np.random.RandomState(seed=seed).uniform(0, num_frames, spike_times2[2]))
         SX2.set_unit_property(unit_id=4, property_name='stability', value=80)
         SX2.set_unit_spike_features(unit_id=3, feature_name='widths', value=np.asarray([3] * spike_times2[0]))
-        RX.set_channel_property(channel_id=0, property_name='location', value=(0, 0))
+        RX.set_channel_locations([0, 0], channel_ids=0)
         for i, unit_id in enumerate(SX2.get_unit_ids()):
             SX2.set_unit_property(unit_id=unit_id, property_name='shared_unit_prop', value=i)
             SX2.set_unit_spike_features(unit_id=unit_id, feature_name='shared_unit_feature',
@@ -86,14 +87,14 @@ class TestExtractors(unittest.TestCase):
         self.assertEqual(self.RX.get_num_frames(), self.example_info['num_frames'])
         self.assertEqual(self.RX.get_sampling_frequency(), self.example_info['sampling_frequency'])
         self.assertEqual(self.SX.get_unit_ids(), self.example_info['unit_ids'])
-        self.assertEqual(self.RX.get_channel_property(channel_id=0, property_name='location'),
-                         self.example_info['channel_prop'])
+        self.assertEqual(self.RX.get_channel_locations(0)[0][0], self.example_info['channel_prop'][0])
+        self.assertEqual(self.RX.get_channel_locations(0)[0][1], self.example_info['channel_prop'][1])
         self.assertEqual(self.SX.get_unit_property(unit_id=1, property_name='stability'),
                          self.example_info['unit_prop'])
         self.assertTrue(np.array_equal(self.SX.get_unit_spike_train(1), self.example_info['train1']))
         self.assertTrue(issubclass(self.SX.get_unit_spike_train(1).dtype.type, np.integer))
-        self.assertTrue(self.RX.get_shared_channel_property_names(), ['shared_channel_prop'])
-        self.assertTrue(self.RX.get_channel_property_names(0), ['location', 'shared_channel_prop'])
+        self.assertTrue(self.RX.get_shared_channel_property_names(), ['group', 'location', 'shared_channel_prop'])
+        self.assertTrue(self.RX.get_channel_property_names(0), ['group', 'location', 'shared_channel_prop'])
         self.assertTrue(self.SX2.get_shared_unit_property_names(), ['shared_unit_prop'])
         self.assertTrue(self.SX2.get_unit_property_names(4), ['shared_unit_prop', 'stability'])
         self.assertTrue(self.SX2.get_shared_unit_spike_feature_names(), ['shared_unit_feature'])
@@ -145,23 +146,72 @@ class TestExtractors(unittest.TestCase):
         assert arr_memmap.dtype == dtype
 
     def test_cache_extractor(self):
-        cache_extractor = se.CacheRecordingExtractor(self.RX)
-        check_recording_return_types(cache_extractor)
-        check_recordings_equal(self.RX, cache_extractor)
-        cache_extractor.save_to_file('cache')
+        cache_rec = se.CacheRecordingExtractor(self.RX)
+        check_recording_return_types(cache_rec)
+        check_recordings_equal(self.RX, cache_rec)
+        cache_rec.move_to('cache_rec')
 
-        assert cache_extractor.filename == 'cache.dat'
-        check_dumping(cache_extractor)
+        assert cache_rec.filename == 'cache_rec.dat'
+        check_dumping(cache_rec)
+
+        cache_rec = se.CacheRecordingExtractor(self.RX, save_path='cache_rec2')
+        check_recording_return_types(cache_rec)
+        check_recordings_equal(self.RX, cache_rec)
+
+        assert cache_rec.filename == 'cache_rec2.dat'
+        check_dumping(cache_rec)
 
         # test saving to file
-        del cache_extractor
-        assert Path('cache.dat').is_file()
+        del cache_rec
+        assert Path('cache_rec2.dat').is_file()
 
         # test tmp
-        cache_extractor = se.CacheRecordingExtractor(self.RX)
-        tmp_file = cache_extractor.filename
-        del cache_extractor
+        cache_rec = se.CacheRecordingExtractor(self.RX)
+        tmp_file = cache_rec.filename
+        del cache_rec
         assert not Path(tmp_file).is_file()
+
+        cache_sort = se.CacheSortingExtractor(self.SX)
+        check_sorting_return_types(cache_sort)
+        check_sortings_equal(self.SX, cache_sort)
+        cache_sort.move_to('cache_sort')
+
+        assert cache_sort.filename == 'cache_sort.npz'
+        check_dumping(cache_sort)
+
+        # test saving to file
+        del cache_sort
+        assert Path('cache_sort.npz').is_file()
+
+        cache_sort = se.CacheSortingExtractor(self.SX, save_path='cache_sort2')
+        check_sorting_return_types(cache_sort)
+        check_sortings_equal(self.SX, cache_sort)
+
+        assert cache_sort.filename == 'cache_sort2.npz'
+        check_dumping(cache_sort)
+
+        # test saving to file
+        del cache_sort
+        assert Path('cache_sort2.npz').is_file()
+
+        # test tmp
+        cache_sort = se.CacheSortingExtractor(self.SX)
+        tmp_file = cache_sort.filename
+        del cache_sort
+        assert not Path(tmp_file).is_file()
+
+    def test_not_dumpable_exception(self):
+        try:
+            self.RX.dump_to_json()
+        except Exception as e:
+            assert isinstance(e, NotDumpableExtractorError)
+
+        try:
+            self.RX.dump_to_pickle()
+        except Exception as e:
+            assert isinstance(e, NotDumpableExtractorError)
+
+
 
     def test_mda_extractor(self):
         path1 = self.test_dir + '/mda'
@@ -225,14 +275,6 @@ class TestExtractors(unittest.TestCase):
         check_sortings_equal(self.SX, SX_exdir)
         check_dumping(SX_exdir)
 
-    def test_kilosort_extractor(self):
-        path1 = self.test_dir + '/ks'
-        se.KiloSortSortingExtractor.write_sorting(self.SX, path1)
-        SX_ks = se.KiloSortSortingExtractor(path1)
-        check_sorting_return_types(SX_ks)
-        check_sortings_equal(self.SX, SX_ks)
-        check_dumping(SX_ks)
-
     def test_spykingcircus_extractor(self):
         path1 = self.test_dir + '/sc'
         se.SpykingCircusSortingExtractor.write_sorting(self.SX, path1)
@@ -248,6 +290,9 @@ class TestExtractors(unittest.TestCase):
         )
         RX_sub = RX_multi.get_epoch('C')
         check_recordings_equal(self.RX, RX_sub)
+        check_recordings_equal(self.RX, RX_multi.recordings[0])
+        check_recordings_equal(self.RX, RX_multi.recordings[1])
+        check_recordings_equal(self.RX, RX_multi.recordings[2])
         self.assertEqual(4, len(RX_sub.get_channel_ids()))
 
         RX_multi = se.MultiRecordingChannelExtractor(
@@ -257,7 +302,10 @@ class TestExtractors(unittest.TestCase):
         print(RX_multi.get_channel_groups())
         RX_sub = se.SubRecordingExtractor(RX_multi, channel_ids=[4, 5, 6, 7], renamed_channel_ids=[0, 1, 2, 3])
         check_recordings_equal(self.RX2, RX_sub)
-        self.assertEqual([2, 2, 2, 2], RX_sub.get_channel_groups())
+        check_recordings_equal(self.RX, RX_multi.recordings[0])
+        check_recordings_equal(self.RX2, RX_multi.recordings[1])
+        check_recordings_equal(self.RX3, RX_multi.recordings[2])
+        self.assertEqual([2, 2, 2, 2], list(RX_sub.get_channel_groups()))
         self.assertEqual(12, len(RX_multi.get_channel_ids()))
 
     def test_multi_sub_sorting_extractor(self):
@@ -276,6 +324,8 @@ class TestExtractors(unittest.TestCase):
         )
         SX_sub1 = se.SubSortingExtractor(parent_sorting=SX_multi, start_frame=0, end_frame=N)
         check_sortings_equal(SX_multi, SX_sub1)
+        check_sortings_equal(self.SX, SX_multi.sortings[0])
+        check_sortings_equal(self.SX2, SX_multi.sortings[1])
 
     def test_dump_load_multi_sub_extractor(self):
         # generate dumpable formats

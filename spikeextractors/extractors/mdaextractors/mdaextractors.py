@@ -1,6 +1,6 @@
 from spikeextractors import RecordingExtractor
 from spikeextractors import SortingExtractor
-from spikeextractors.extraction_tools import write_to_binary_dat_format, check_get_traces_args
+from spikeextractors.extraction_tools import write_to_binary_dat_format, check_get_traces_args, check_valid_unit_id
 
 import json
 import numpy as np
@@ -27,7 +27,7 @@ class MdaRecordingExtractor(RecordingExtractor):
         self._timeseries_path = os.path.abspath(timeseries0)
         geom0 = dataset_directory / geom_fname
         self._geom_fname = geom0
-        self._geom = np.genfromtxt(self._geom_fname, delimiter=',')
+        self._geom = np.loadtxt(self._geom_fname, delimiter=',',ndmin=2)
         X = DiskReadMda(self._timeseries_path)
         if self._geom.shape[0] != X.N1():
             raise Exception(
@@ -36,8 +36,7 @@ class MdaRecordingExtractor(RecordingExtractor):
         self._num_channels = X.N1()
         self._num_timepoints = X.N2()
         RecordingExtractor.__init__(self)
-        for m in range(self._num_channels):
-            self.set_channel_property(m, 'location', self._geom[m, :])
+        self.set_channel_locations(self._geom)
         self._kwargs = {'folder_path': str(Path(folder_path).absolute())}
 
     def get_channel_ids(self):
@@ -128,12 +127,7 @@ class MdaRecordingExtractor(RecordingExtractor):
         num_chan = recording.get_num_channels()
         num_frames = recording.get_num_frames()
 
-        location0 = recording.get_channel_property(channel_ids[0], 'location')
-        nd = len(location0)
-        geom = np.zeros((num_chan, nd))
-        for ii in range(len(channel_ids)):
-            location_ii = recording.get_channel_property(channel_ids[ii], 'location')
-            geom[ii, :] = list(location_ii)
+        geom = recording.get_channel_locations()
 
         if not save_path.is_dir():
             os.mkdir(save_path)
@@ -185,6 +179,7 @@ class MdaSortingExtractor(SortingExtractor):
     def get_unit_ids(self):
         return list(self._unit_ids)
 
+    @check_valid_unit_id
     def get_unit_spike_train(self, unit_id, start_frame=None, end_frame=None):
         start_frame, end_frame = self._cast_start_end_frame(start_frame, end_frame)
         if start_frame is None:

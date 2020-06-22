@@ -39,10 +39,14 @@ class MultiRecordingChannelExtractor(RecordingExtractor):
                 for i, group in enumerate(groups):
                     recording = recordings[i]                    
                     channel_ids = recording.get_channel_ids()
-                    recording.set_channel_groups(channel_ids=channel_ids, groups=np.repeat(group,len(channel_ids)))
+                    recording.set_channel_groups(groups=np.repeat(group, len(channel_ids)), channel_ids=channel_ids)
             else:
                 raise ValueError("recordings and groups must have same length")
         self._kwargs = {'recordings': [rec.make_serialized_dict() for rec in recordings], 'groups': groups}
+
+    @property
+    def recordings(self):
+        return self._recordings
 
     @check_get_traces_args
     def get_traces(self, channel_ids=None, start_frame=None, end_frame=None):
